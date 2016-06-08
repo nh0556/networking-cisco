@@ -166,6 +166,606 @@ def is_port_v6(port):
         return False
 
 
+class Command(object):
+    """
+    Base check command class
+    """
+
+    CMD_SUCCESS = "SUCCESS"
+    CMD_CONTINUE = "CONTINUE"
+    CMD_FAIL = "FAIL"
+
+    # Command or Check failed, but continue iteration
+    CMD_FAIL_CONTINUE = "FAIL_CONTINUE"
+
+    def __init__(self, cmd_context, name=None):
+        self.cmd_context = cmd_context
+        self.name = name
+        self.status = None
+
+    def _assert_keys_in_cmd_context(self, expected_ctx_keys):
+        """
+        This method asserts that ALL keys present in the list,
+        expected_ctx_keys are present in self.cmd_context
+        """
+        ret_val = True
+
+        if expected_ctx_keys is not None and self.cmd_context is not None:
+            for key in expected_ctx_keys:
+                if key not in self.cmd_context:
+                    LOG.debug("key %s not found in"
+                              " cmd_context, failed check" % (key))
+                    ret_val = False
+                    break
+
+        return ret_val
+
+    @staticmethod
+    def assert_keys_in_dict(expected_keys, target_dict):
+
+        ret_val = True
+
+        if (expected_keys is not None and target_dict is not None):
+            for key in expected_keys:
+                if key not in target_dict:
+                    LOG.debug("key %s not found in cmd_context,"
+                              " failed check" % (key))
+                    ret_val = False
+                    break
+
+        return ret_val
+
+    def execute(self):
+        return Command.CMD_SUCCESS
+
+
+class DeleteLegacySNATCmd(Command):
+
+    """
+    This command removes any old legacy format SNAT rules found
+    on the ASR
+
+    Delete any entries with old style 'hsrp-grp-x-y' grp name
+    """
+    SNAT_REGEX_OLD = ("ip nat inside source static"
+                      " (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+                      " (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) vrf " +
+                      NROUTER_REGEX +
+                      " redundancy neutron-hsrp-grp-(\d+)-(\d+)")
+
+    def __init__(self, cmd_context=None, name="DeleteLegacySNATCmd"):
+        super(DeleteLegacySNATCmd, self).__init__(cmd_context, name)
+
+    def execute(self):
+        """
+        overloaded execute
+        """
+        LOG.info("DeleteLegacySNATCmd execute")
+        if (self._assert_keys_in_cmd_context(['parsed_cfg',
+                                              'invalid_cfg',
+                                              'config_syncer'])):
+
+            # check if any old-style NAT rules are present and
+            # queue them up for deletion
+            parsed_cfg = self.cmd_context['parsed_cfg']
+            invalid_cfg = self.cmd_context['invalid_cfg']
+            delete_fip_list = []
+
+            floating_ip_old_rules = (
+                parsed_cfg.find_objects(DeleteLegacySNATCmd.SNAT_REGEX_OLD))
+
+            for snat_rule in floating_ip_old_rules:
+                LOG.info(_LI("\n Rule is old format,"
+                             " deleting: %(snat_rule)s") %
+                         {'snat_rule': snat_rule.text})
+
+                delete_fip_list.append(snat_rule.text)
+
+            invalid_cfg += delete_fip_list
+            cmd_status = Command.CMD_SUCCESS
+        else:
+            cmd_status = Command.CMD_CONTINUE
+
+        return cmd_status
+
+
+class CheckSNATCmd(Command):
+    """
+    This Command checks whether static NAT/Floating-IP matches
+    expected neutron-db state.
+    """
+
+    def __init__(self, cmd_context=None):
+        super(CheckSNATCmd, self).__init__(cmd_context, "CheckSNATCmd")
+        self.snat_regex = SNAT_REGEX
+
+        self.snat_checks = [self._validate_parsed_snat_rule,
+                            self._validate_router_id,
+                            self._validate_gw_port]
+
+    def _parse_snat(self, raw_snat_rule, cfg_syncer):
+        """
+        Implements the SNAT extraction/parsing logic that returns
+        a dictionary
+
+        output: populates a dict and appends it to the cmd_context
+                with the key, 'current_parsed_snat_rule'
+        """
+        LOG.info("CheckSNATCmd::_parse_snat execute")
+
+        # don't think this assert check is needed
+        if (self._assert_keys_in_cmd_context(['parsed_cfg',
+                                              'invalid_cfg',
+                                              'cfg_syncer'])):
+
+            match_obj = re.match(self.snat_regex, raw_snat_rule.text)
+
+            inner_ip, outer_ip, router_id, hsrp_num, segment_id = (
+                match_obj.group(1, 2, 3, 4, 5))
+
+            segment_id = int(segment_id)
+            hsrp_num = int(hsrp_num)
+
+            current_parsed_snat_rule = {'inner_ip': inner_ip,
+                                        'outer_ip': outer_ip,
+                                        'router_id': router_id,
+                                        'hsrp_num': hsrp_num,
+                                        'segment_id': segment_id}
+            self.cmd_context['current_parsed_snat_rule'] = (
+                current_parsed_snat_rule)
+
+            return current_parsed_snat_rule
+        else:
+            return None
+
+    def _validate_parsed_snat_rule(self,
+                                raw_snat_rule,
+                                cur_parsed_snat_rule,
+                                cfg_syncer):
+
+        if (Command.assert_keys_in_dict(['inner_ip', 'outer_ip',
+                                         'router_id',
+                                         'hsrp_num', 'segment_id'],
+                                        cur_parsed_snat_rule)):
+            return Command.CMD_SUCCESS
+        else:
+            return Command.CMD_FAIL
+
+    def _validate_router_id(self,
+                            raw_snat_rule,
+                            cur_parsed_snat_rule,
+                            cfg_syncer):
+        """
+        Verifies whether valid router-id is present
+        """
+        ret_val = Command.CMD_SUCCESS
+
+        if (cur_parsed_snat_rule is not None and cfg_syncer is not None and
+            cur_parsed_snat_rule['router_id'] in cfg_syncer.router_id_dict):
+            ret_val = Command.CMD_SUCCESS
+        else:
+            LOG.info(_LI("router %s not found for snat_rule") % (
+                     cur_parsed_snat_rule['router_id']))
+            ret_val = Command.CMD_FAIL
+
+        return ret_val
+
+    def _validate_gw_port(self,
+                          raw_snat_rule,
+                          cur_parsed_snat_rule,
+                          cfg_syncer):
+        """
+        Verifies whether a valid gw port is configured
+        """
+        ret_val = Command.CMD_SUCCESS
+
+        router = cfg_syncer.router_id_dict(cur_parsed_snat_rule['router_id'])
+
+        if "gw_port" not in router:
+            LOG.info(_LI("router has no gw_port,"
+                         " snat is invalid"))
+            ret_val = Command.CMD_FAIL
+            return ret_val
+        else:
+            # validate hsrp and segment_id configured on gw_port
+            gw_port = router['gw_port']
+            gw_hsrp_num = int(gw_port[ha.HA_INFO]['group'])
+            gw_segment_id = int(gw_port['hosting_info']['segmentation_id'])
+
+            if cur_parsed_snat_rule['segment_id'] != gw_segment_id:
+                LOG.info(_LI("snat segment_id does not match router's"
+                         " gw segment_id, deleting"))
+                ret_val = Command.CMD_FAIL
+                return ret_val
+
+            if cur_parsed_snat_rule['hsrp_num'] != gw_hsrp_num:
+                LOG.info(_LI("snat hsrp group does not match router gateway's"
+                         " hsrp group, deleting"))
+                ret_val = Command.CMD_FAIL
+                return ret_val
+
+            if '_floatingips' not in router:
+                LOG.info(_LI("Router has no floating IPs defined,"
+                         " snat rule is invalid, deleting"))
+                ret_val = Command.CMD_FAIL
+                return ret_val
+
+            fip_match_found = False
+            for floating_ip in router['_floatingips']:
+                if ((cur_parsed_snat_rule['inner_ip'] ==
+                     floating_ip['fixed_ip_address']) and
+                    (cur_parsed_snat_rule['outer_ip'] ==
+                     floating_ip['floating_ip_address'])):
+                    fip_match_found = True
+                    break
+
+            if fip_match_found is False:
+                LOG.info(_LI("snat rule does not match defined floating IPs,"
+                         " deleting"))
+                ret_val = Command.CMD_FAIL
+                return ret_val
+
+        ret_val = Command.CMD_SUCCESS
+        return ret_val
+
+    def execute(self):
+
+        LOG.info("CheckSNATCmd::execute")
+
+        if (self._assert_keys_in_cmd_context(['parsed_cfg',
+                                              'invalid_cfg',
+                                              'cfg_syncer'])):
+
+            LOG.debug("CheckSNATCmd precondition met")
+
+            parsed_cfg = self.cmd_context['parsed_cfg']
+            invalid_cfg = self.cmd_context['invalid_cfg']
+            cfg_syncer = self.cmd_context['cfg_syncer']
+
+            floating_ip_snats = parsed_cfg.find_objects(self.snat_regex)
+
+            LOG.info("floating_ip_snats = %s" % (
+                      pp.pformat(floating_ip_snats)))
+
+            for snat_rule in floating_ip_snats:
+
+                # cur_snat_rule = self.cmd_context['current_snat_rule']
+                cur_parsed_snat_rule = self._parse_snat(snat_rule, cfg_syncer)
+
+                LOG.info(_LI("current parsed snat rule: %s") % (
+                         pp.pformat(cur_parsed_snat_rule)))
+
+                # If any check should fail, mark snat_rule as invalid
+                for check in self.snat_checks:
+                    ret = check(snat_rule,
+                                cur_parsed_snat_rule,
+                                cfg_syncer)
+
+                    if (ret == Command.CMD_FAIL):
+                        LOG.debug("check %s failed, marking snat_rule %s as"
+                                  " invalid" % (check.__name__, snat_rule))
+                        invalid_cfg.append(snat_rule)
+                        break
+
+            return Command.CMD_SUCCESS
+        else:
+            return Command.CMD_FAIL
+
+
+class CheckSNATMultiRegionCmd(CheckSNATCmd):
+    """
+    This is the multi-region specific command
+    for checking/validating SNAT / Floating IP
+    configuration
+
+    The following base class methods have been overloaded:
+    to account for multi-region specific behavior
+
+        __init__
+        _parse_snat
+    """
+
+    def __init__(self, cmd_context=None):
+        super(CheckSNATMultiRegionCmd, self).__init__(cmd_context)
+
+        self.name = "CheckSNATMultiRegionCmd"
+        self.snat_regex = SNAT_MULTI_REGION_REGEX
+
+        self.snat_checks = [self._validate_parsed_snat_rule,
+                            self._validate_region_id,
+                            self._validate_router_id,
+                            self._validate_gw_port]
+
+    def _parse_snat(self, raw_snat_rule, cfg_syncer):
+        """
+        Overloaded implementation of _parse_snat that handles multi-region
+        specific format
+
+        output: populates a dictionary and returns
+        """
+        LOG.info("CheckSNATMultiRegionCmd::_parse_snat execute")
+
+        # don't think this assert check is needed
+        if (self._assert_keys_in_cmd_context(['parsed_cfg',
+                                              'invalid_cfg',
+                                              'cfg_syncer'])):
+
+            match_obj = re.match(self.snat_regex, raw_snat_rule.text)
+
+            inner_ip, outer_ip, router_id, region_id, hsrp_num, segment_id = (
+                match_obj.group(1, 2, 3, 4, 5, 6))
+
+            segment_id = int(segment_id)
+            hsrp_num = int(hsrp_num)
+
+            current_parsed_snat_rule = {'inner_ip': inner_ip,
+                                        'outer_ip': outer_ip,
+                                        'router_id': router_id,
+                                        'region_id': region_id,
+                                        'hsrp_num': hsrp_num,
+                                        'segment_id': segment_id}
+            self.cmd_context['current_parsed_snat_rule'] = (
+                current_parsed_snat_rule)
+
+            return current_parsed_snat_rule
+        else:
+            return None
+
+    def _validate_parsed_snat_rule(self,
+                                raw_snat_rule,
+                                cur_parsed_snat_rule,
+                                cfg_syncer):
+
+        if (Command.assert_keys_in_dict(['inner_ip', 'outer_ip',
+                                         'router_id', 'region_id',
+                                         'hsrp_num', 'segment_id'],
+                                        cur_parsed_snat_rule)):
+            return Command.CMD_SUCCESS
+        else:
+            return Command.CMD_FAIL
+
+    def _validate_region_id(self,
+                            raw_snat_rule,
+                            cur_parsed_snat_rule, cfg_syncer):
+
+            region_id = cur_parsed_snat_rule['region_id']
+            my_region_id = cfg.CONF.multi_region.region_id
+            other_region_ids = cfg.CONF.multi_region.other_region_ids
+
+            if region_id != my_region_id:
+                if region_id not in other_region_ids:
+                    # invalid_cfg = self.cmd_context['invalid_cfg']
+                    # invalid_cfg.append(raw_snat_rule.text)
+                    return Command.CMD_FAIL
+
+            return Command.CMD_SUCCESS
+
+
+class ConfigSyncer2(object):
+    """
+    A refactored / reworked version
+    """
+
+    def __init__(self,
+                 router_db_info,
+                 driver,
+                 hosting_device_info):
+        """
+        @param router_db_info - the list of router dictionaries as supplied by
+                                the plugin
+        @param driver - the driver object associated with the underlying
+                        hosting device
+        @param hosting_device_info - the associated hosting-device
+        """
+
+        # the driver associated with the hosting
+        # device info.  The driver is used for
+        # applying any deletes to the underlying
+        # ASR
+        self.hosting_device_info = hosting_device_info
+        self.driver = driver
+
+        # A counter for the number of times the
+        # ConfigSyncer was invoked
+        self.num_delete_invalid_cfgs_invoked = 0
+
+        # searchable lookup dictionaries
+        # created from neutron-db, router_db_info.
+        #
+        # key, router_id, value = router dict
+        self.router_id_dict = {}
+
+        # key, segment_id, value = tenant interface
+        self.segment_intf_dict = {}
+
+        # key, segment_id, value = gw_port
+        self.segment_gw_dict = {}
+
+        # key, segment_id, value = Boolean
+        self.segment_nat_dict = {}
+
+        # populate search dictionaries
+        self._process_plugin_routers_data(router_db_info)
+
+    def __repr__(self):
+        current_state = {'hosting_device_info': self.hosting_device_info,
+             'driver': self.driver.__class__.__name__,
+             'num_delete_invalid_cfgs': self.num_delete_invalid_cfgs_invoked,
+             'router_id_dict_keys': self.router_id_dict.keys(),
+             'router_id_dict': self.router_id_dict,
+             'segment_intf_dict_keys': self.segment_intf_dict.keys(),
+             'segment_intf_dict': self.segment_intf_dict,
+             'segment_nat_dict': self.segment_nat_dict}
+
+        return "%s\n%s" % (self.__class__.__name__, pp.pformat(current_state))
+
+    def _is_router_valid_for_processing(self, router, hosting_device_id=None):
+        """
+        @param router - a router dictionary
+        """
+
+        # precondition check
+        if router is None:
+            return False
+
+        if 'hosting_device' not in router:
+            return False
+
+        if 'id' not in router['hosting_device']:
+            return False
+
+        # hosting-device check
+        if (hosting_device_id is not None and
+            router['hosting_device']['id'] != hosting_device_id):
+            return False
+
+        return True
+
+    def _process_router(self, router):
+        """
+        tenant routers are represented as vrfs in the ASR
+
+        nrouter-[6 digit uuid] or
+        nrouter-[6 digit uuid)-[7 digit region-id]
+        """
+        if router is not None and 'id' in router:
+            short_router_id = router['id'][0:6]
+            self.router_id_dict[short_router_id] = router
+
+    def _process_router_db_interfaces(self, router):
+        """
+        Setup (tenant network) router interfaces lookup dictionary that's keyed
+        by segment-id
+        """
+
+        if '_interfaces' in router:
+
+            router_intfs = router['_interfaces']
+
+            for router_intf in router_intfs:
+                hosting_info = router_intf['hosting_info']
+                segment_id = hosting_info['segmentation_id']
+
+                if segment_id not in self.segment_intf_dict:
+                    self.segment_intf_dict[segment_id] = []
+
+                self.segment_intf_dict[segment_id].append(router_intf)
+
+                if segment_id not in self.segment_nat_dict:
+                    self.segment_nat_dict[segment_id] = False
+
+    def _process_router_gw_port(self, router):
+        """
+        This helper method populates the segment_gw_dict
+
+        Global routers model the physical interface used for
+        connecting to the provider external network.
+        """
+        if router is not None and 'gw_port' in router:
+
+            gw_port = router['gw_port']
+
+            if ('hosting_info' in gw_port and
+                'segmentation_id' in gw_port['hosting_info']):
+
+                gw_segment_id = gw_port['hosting_info']['segmentation_id']
+
+                if (router[ROUTER_ROLE_ATTR] ==
+                    cisco_constants.ROUTER_ROLE_GLOBAL):
+
+                    # note down actual gateway_port
+                    self.segment_gw_dict[gw_segment_id] = gw_port
+
+                    # if gw_port is present and (private) router interfaces
+                    # are also present, then dyn nat is enabled
+                    if '_interfaces' in router:
+                        for intf in router['_interfaces']:
+
+                            if ((intf['device_owner'] ==
+                                constants.DEVICE_OWNER_ROUTER_INTF) and
+                                (is_port_v6(intf) is False)):
+                                self.segment_nat_dict[gw_segment_id] = True
+
+                                intf_seg_id = \
+                                    intf['hosting_info']['segmentation_id']
+                                self.segment_nat_dict[intf_seg_id] = True
+
+    def _process_plugin_routers_data(self, router_db_info):
+        """
+        This method consumes the plugin supplied router_db_info and
+        initializes the internal search dictionaries.
+
+        For router in the router_db_info, screen out routers that don't
+        pertain to this Config-Syncers hosting-device.
+
+        @param router_db_info - A list of router dictionaries (from neutron-db)
+        """
+
+        my_hd_id = self.hosting_device_info['id']
+
+        for router in router_db_info:
+            if (self._is_router_valid_for_processing(router, my_hd_id)):
+                self._process_router(router)
+                self._process_router_db_interfaces(router)
+                self._process_router_gw_port(router)
+
+    def get_running_config(self, conn):
+        """Get the CSR's current running config.
+        :return: Current IOS running config as multiline string
+        """
+        config = conn.get_config(source="running")
+        if config:
+            root = ET.fromstring(config._raw)
+            running_config = root[0][0]
+            rgx = re.compile("\r*\n+")
+            ioscfg = rgx.split(running_config.text)
+            return ioscfg
+
+    def _command_factory(self, cfg_sync_ctx):
+        """Factory method for generating a list of commands to execute."""
+
+        if cfg.CONF.multi_region.enable_multi_region:
+            return [DeleteLegacySNATCmd(cfg_sync_ctx),
+                    CheckSNATMultiRegionCmd(cfg_sync_ctx)]
+        else:
+            return [DeleteLegacySNATCmd(cfg_sync_ctx),
+                    CheckSNATCmd(cfg_sync_ctx)]
+
+    def delete_invalid_cfg(self, conn=None):
+        """
+        Retrieves running-config from ASR and compares against neutron-db
+        search dictionaries
+        """
+
+        if not conn:
+            conn = self.driver._get_connection()
+
+        LOG.debug("*************************")
+        LOG.debug("neutron router db records")
+        LOG.debug("%s" % self)
+
+        running_cfg = self.get_running_config(conn)
+        parsed_cfg = HTParser(running_cfg)
+
+        invalid_cfg = []
+
+        cfg_sync_ctx = {'running_cfg': running_cfg,
+                        'parsed_cfg': parsed_cfg,
+                        'invalid_cfg': invalid_cfg,
+                        'conn': conn,
+                        'cfg_syncer': self}
+
+        # instead of using a macro-command, consider just having
+        # commands themselves.  One less loop to deal with and probably
+        # more straightforward to read
+        commands = self._command_factory(cfg_sync_ctx)
+
+        for command in commands:
+            command.execute()
+
+        return invalid_cfg
+
+
 class ConfigSyncer(object):
 
     def __init__(self, router_db_info, driver,

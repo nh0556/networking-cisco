@@ -1422,6 +1422,90 @@ NEUTRON_DB = [
 ]
 
 
+class ASR1kCfgSyncer2(base.BaseTestCase):
+
+    def setUp(self):
+        super(ASR1kCfgSyncer2, self).setUp()
+
+        # self._read_neutron_db_data()
+        self.router_db_info = NEUTRON_DB
+        self.hosting_device_info = \
+            {'id': '00000000-0000-0000-0000-000000000003'}
+        self.driver = mock.Mock()
+        self.config_syncer = \
+            asr1k_cfg_syncer.ConfigSyncer2(self.router_db_info,
+                                           self.driver,
+                                           self.hosting_device_info)
+
+    def tearDown(self):
+        super(ASR1kCfgSyncer2, self).tearDown()
+
+    def test_process_plugin_routers_data(self):
+        self.config_syncer = \
+            asr1k_cfg_syncer.ConfigSyncer2(self.router_db_info,
+                                           self.driver,
+                                           self.hosting_device_info)
+
+    def test_delete_invalid_cfg_empty_routers_list(self):
+        """
+        For this test, expect all ASR state to be flagged as invalid
+        """
+        cfg.CONF.set_override('enable_multi_region', False, 'multi_region')
+        router_db_info = []
+        self.config_syncer = \
+            asr1k_cfg_syncer.ConfigSyncer2(router_db_info,
+                                           self.driver,
+                                           self.hosting_device_info)
+
+        self.config_syncer.get_running_config = mock.Mock(
+            return_value=ASR_BASIC_RUNNING_CFG_NO_MULTI_REGION)
+
+        invalid_cfg = self.config_syncer.delete_invalid_cfg()
+
+        self.assertEqual(8, len(invalid_cfg))
+
+    def test_delete_invalid_cfg_with_multi_region_and_empty_routers_list(self):
+        """
+        This test verifies that the  cfg-syncer will delete invalid cfg
+        if the neutron-db (routers dictionary list) happens to be empty.
+
+        Since the neutron-db router_db_info is empty, all region 0000002
+        running-config should be deleted.
+
+        Expect 8 invalid configs found
+
+        ['ip nat inside source static 10.2.0.5 172.16.0.126'
+          ' vrf nrouter-3ea5f9-0000002 redundancy neutron-hsrp-1064-3000',
+         'ip nat inside source list neutron_acl_0000002_2564 pool '
+         'nrouter-3ea5f9-0000002_nat_pool vrf nrouter-3ea5f9-0000002 overload',
+         'ip nat pool nrouter-3ea5f9-0000002_nat_pool '
+          '172.16.0.124 172.16.0.124 netmask 255.255.0.0',
+         'ip route vrf nrouter-3ea5f9-0000002 0.0.0.0 0.0.0.0'
+          ' Port-channel10.3000 172.16.0.1',
+         'ip access-list standard neutron_acl_0000002_2564',
+         <IOSCfgLine # 83 'interface Port-channel10.2564'>,
+         <IOSCfgLine # 96 'interface Port-channel10.3000'>,
+         'nrouter-3ea5f9-0000002']
+        """
+
+        cfg.CONF.set_override('enable_multi_region', True, 'multi_region')
+        cfg.CONF.set_override('region_id', '0000002', 'multi_region')
+        cfg.CONF.set_override('other_region_ids', ['0000001'], 'multi_region')
+
+        # simulate a blank neutron-db
+        router_db_info = []
+        self.config_syncer = asr1k_cfg_syncer.ConfigSyncer2(router_db_info,
+                                                      self.driver,
+                                                      self.hosting_device_info)
+
+        self.config_syncer.get_running_config = mock.Mock(
+            return_value=ASR_BASIC_RUNNING_CFG)
+
+        invalid_cfg = self.config_syncer.delete_invalid_cfg()
+
+        self.assertEqual(8, len(invalid_cfg))
+
+
 class ASR1kCfgSyncer(base.BaseTestCase):
 
     def setUp(self):
