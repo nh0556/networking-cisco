@@ -32,6 +32,37 @@ class CfgAgentDebug(base.BaseTestCase):
     def tearDown(self):
         super(CfgAgentDebug, self).tearDown()
 
+    def test_hosting_device_txns(self):
+        cfg.CONF.set_override('enable_cfg_agent_debug', True, 'cfg_agent')
+        cfg.CONF.set_override('max_parent_records', 2, 'cfg_agent')
+        cfg.CONF.set_override('max_child_records', 3, 'cfg_agent')
+
+        hosting_device_template = "172.1.1.%d"
+        # fixed_ip_template = "Fixed IP 192.168.1.%d"
+
+        for i in range(0, 2):
+            hd_ip = hosting_device_template % (i)
+
+            self.cfg_agent_debug.add_hosting_device_txn(hd_ip,
+                                                     "ACTIVE",
+                                                     None,
+                                                     comment=None)
+            self.cfg_agent_debug.add_hosting_device_txn(hd_ip,
+                                                     "NOT_RESPONDING",
+                                                     None,
+                                                     comment=None)
+            self.cfg_agent_debug.add_hosting_device_txn(hd_ip,
+                                                     "DEAD",
+                                                     None,
+                                                     comment=None)
+
+        print(self.cfg_agent_debug.get_all_hosting_devices_txns_strfmt())
+
+        expected_hd_ips = ['172.1.1.0', '172.1.1.1']
+
+        self.assertEqual(expected_hd_ips,
+                         list(self.cfg_agent_debug.hosting_devices.keys()))
+
     def test_fip_txns(self):
 
         cfg.CONF.set_override('enable_cfg_agent_debug', True, 'cfg_agent')

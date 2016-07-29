@@ -196,6 +196,10 @@ class RoutingServiceHelper(object):
         """Deal with router deletion RPC message."""
         LOG.debug('Got router deleted notification for %s', routers)
         self.removed_routers.update(routers)
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RPC_RTRS_DELETED",
+                          None,
+                          "routers:%s" % (pp.pformat(routers)))
 
     def routers_updated(self, context, routers):
         """Deal with routers modification and creation RPC message."""
@@ -205,19 +209,48 @@ class RoutingServiceHelper(object):
             if isinstance(routers[0], dict):
                 routers = [router['id'] for router in routers]
             self.updated_routers.update(routers)
+            self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RPC_RTRS_UPDATED",
+                          None,
+                          "routers:%s" % (pp.pformat(routers)))
 
     def router_removed_from_hosting_device(self, context, routers):
         LOG.debug('Got router removed from hosting device: %s', routers)
         self.router_deleted(context, routers)
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RPC_RTR_RM_FROM_HST_DVC",
+                          None,
+                          "routers:%s" % (pp.pformat(routers)))
 
     def router_added_to_hosting_device(self, context, routers):
         LOG.debug('Got router added to hosting device :%s', routers)
         self.routers_updated(context, routers)
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RPC_RTR_ADD_HST_DVC",
+                          None,
+                          "routers:%s" % (pp.pformat(routers)))
 
     # version 1.1
     def routers_removed_from_hosting_device(self, context, router_ids):
         LOG.debug('Got routers removed from hosting device: %s', router_ids)
         self.router_deleted(context, router_ids)
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RPC_RTRS_RM_FROM_HST_DVC",
+                          None,
+                          "routers:%s" % (pp.pformat(router_ids)))
+
+    def cfg_agent_debug(self, context):
+        LOG.debug('cfg_agent_debug invoked!')
+        LOG.debug("**** Updated routers:%s",
+                  pp.pformat(self.updated_routers))
+        LOG.debug("**** Removed routers:%s",
+                  pp.pformat(self.removed_routers))
+        LOG.debug("**** cfg_agent_debug:%s" % (
+                  self.cfg_agent.cfg_agent_debug.get_all_agent_txns_strfmt()))
+        LOG.debug("**** cfg_agent_debug routers:%s" % (
+                  self.cfg_agent.cfg_agent_debug.get_all_router_txns_strfmt()))
+        LOG.debug("**** cfg_agent_debug fips:%s" % (
+                  self.cfg_agent.cfg_agent_debug.get_all_fip_txns_strfmt()))
 
     # Routing service helper public methods
 
@@ -234,6 +267,11 @@ class RoutingServiceHelper(object):
             all_routers_flag = False
             if self.fullsync:
                 LOG.debug("FullSync flag is on. Starting fullsync")
+                self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "FULL_SYNC_START",
+                          None,
+                          "Full Sync")
+
                 # Setting all_routers_flag and clear the global full_sync flag
                 all_routers_flag = True
                 self.fullsync = False
@@ -245,6 +283,10 @@ class RoutingServiceHelper(object):
                 LOG.debug("All routers: %s" % (pp.pformat(routers)))
                 if routers is not None:
                     self._cleanup_invalid_cfg(routers)
+                self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "FULL_SYNC_END",
+                          None,
+                          "Full Sync")
             else:
                 if self.updated_routers:
                     router_ids = list(self.updated_routers)
@@ -392,6 +434,11 @@ class RoutingServiceHelper(object):
                         process_services
         """
         sync_devices_list = list(self.sync_devices)
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                                       "DEVICE_SYNC_START",
+                                       None,
+                                       "devices %s" % (pp.pformat(
+                                                       sync_devices_list)))
         LOG.debug("Fetching routers on:%s", sync_devices_list)
         fetched_routers = self._fetch_router_info(device_ids=sync_devices_list)
 
@@ -429,6 +476,12 @@ class RoutingServiceHelper(object):
                           "be attempted." %
                           (self.sync_devices_attempts,
                            cfg.CONF.cfg_agent.max_device_sync_attempts))
+                self.cfg_agent.cfg_agent_debug.add_agent_txn(
+                                             "cfg_agent",
+                                             "MAX_DEVICE_SYNC_EXCEEDED",
+                                             None,
+                                             "devices %s" % (pp.pformat(
+                                                          sync_devices_list)))
                 self.sync_devices.clear()
                 self.sync_devices_attempts = 0
             else:
@@ -438,6 +491,17 @@ class RoutingServiceHelper(object):
                           (self.sync_devices_attempts,
                            cfg.CONF.cfg_agent.max_device_sync_attempts,
                            pp.pformat(self.sync_devices)))
+                self.cfg_agent.cfg_agent_debug.add_agent_txn(
+                                         "cfg_agent",
+                                         "DEVICE_SYNC_RETRY",
+                                         None,
+                                         "devices %s" % (pp.pformat(
+                                                         sync_devices_list)))
+
+        self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "DEVICE_SYNC_END",
+                          None,
+                          "devices %s" % (pp.pformat(sync_devices_list)))
 
     @staticmethod
     def _get_router_ids_from_removed_devices_info(removed_devices_info):
@@ -588,7 +652,11 @@ class RoutingServiceHelper(object):
                     else:
                         # retry the router update on the next pass
                         self.updated_routers.add(r['id'])
-                        LOG.debug("RETRY_RTR_UPDATE %s" % (r['id']))
+                        self.cfg_agent.cfg_agent_debug.add_agent_txn(
+                            "cfg_agent",
+                            "RETRY_RTR_UPDATE",
+                            None,
+                            "router:%s" % (r['id']))
 
                     continue
                 except KeyError as e:
@@ -611,6 +679,10 @@ class RoutingServiceHelper(object):
             LOG.exception(_LE("Exception in processing routers on device:%s"),
                           device_id)
             self.sync_devices.add(device_id)
+            self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                            "ENQ DEVICE_SYNC",
+                            None,
+                            "device:%s" % (device_id))
 
     def _send_update_port_statuses(self, port_ids, status):
         """Sends update notifications to set the operational status of the
@@ -837,6 +909,9 @@ class RoutingServiceHelper(object):
                       {'id': router_id, 'role': router[ROUTER_ROLE_ATTR]})
         else:
             driver.router_added(ri)
+            self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "RTR_CREATED",
+                                       self.context.request_id)
         self.router_info[router_id] = ri
 
     def _router_removed(self, router_id, deconfigure=True):
@@ -869,6 +944,9 @@ class RoutingServiceHelper(object):
                 driver = self.driver_manager.get_driver(router_id)
                 driver.router_removed(ri)
                 self.driver_manager.remove_driver(router_id)
+                self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                           "RTR_RM",
+                                           self.context.request_id)
             del self.router_info[router_id]
             self.removed_routers.discard(router_id)
         except cfg_exceptions.DriverException:
@@ -892,43 +970,97 @@ class RoutingServiceHelper(object):
                 self.removed_routers.add(router_id)
                 LOG.debug("Interim connectivity lost to hosting device %s, "
                           "enqueuing router %s in removed_routers set" %
-                          pp.pformat(hd), router_id)
+                          (pp.pformat(hd), router_id))
+                self.cfg_agent.cfg_agent_debug.add_agent_txn("cfg_agent",
+                          "RETRY_RTR_DELETED",
+                          None,
+                          "router:%s" % (router_id))
 
     def _internal_network_added(self, ri, port, ex_gw_port):
         driver = self.driver_manager.get_driver(ri.id)
         driver.internal_network_added(ri, port)
+        self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "RTR_INT_INTF_ADD",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
         if ri.snat_enabled and ex_gw_port:
             driver.enable_internal_network_NAT(ri, port, ex_gw_port)
+            self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "DYN_NAT_ADD",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
 
     def _internal_network_removed(self, ri, port, ex_gw_port):
         driver = self.driver_manager.get_driver(ri.id)
         driver.internal_network_removed(ri, port)
+        self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "RTR_INT_INTF_RM",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
         if ri.snat_enabled and ex_gw_port:
             #ToDo(Hareesh): Check if the intfc_deleted attribute is needed
             driver.disable_internal_network_NAT(ri, port, ex_gw_port,
                                                 itfc_deleted=True)
+            self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "DYN_NAT_RM",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
 
     def _external_gateway_added(self, ri, ex_gw_port):
         driver = self.driver_manager.get_driver(ri.id)
         driver.external_gateway_added(ri, ex_gw_port)
+        self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                 "GW_PORT_ADD",
+                                 self.context.request_id,
+                                 comment="ext-net-id: %s" % (
+                                        pp.pformat(ex_gw_port['network_id'])))
         if ri.snat_enabled and ri.internal_ports:
             for port in ri.internal_ports:
                 driver.enable_internal_network_NAT(ri, port, ex_gw_port)
+                self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "DYN_NAT_ADD",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
 
     def _external_gateway_removed(self, ri, ex_gw_port):
         driver = self.driver_manager.get_driver(ri.id)
         if ri.snat_enabled and ri.internal_ports:
             for port in ri.internal_ports:
                 driver.disable_internal_network_NAT(ri, port, ex_gw_port)
+                self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                       "DYN_NAT_RM",
+                                       self.context.request_id,
+                                       comment="net-id: %s" % (
+                                            pp.pformat(port['network_id'])))
         driver.external_gateway_removed(ri, ex_gw_port)
+        self.cfg_agent.cfg_agent_debug.add_router_txn(ri.id,
+                                 "GW_PORT_RM",
+                                 self.context.request_id,
+                                 comment="ext-net-id: %s" % (
+                                        pp.pformat(ex_gw_port['network_id'])))
 
     def _floating_ip_added(self, ri, ex_gw_port, floating_ip, fixed_ip):
         driver = self.driver_manager.get_driver(ri.id)
         driver.floating_ip_added(ri, ex_gw_port, floating_ip, fixed_ip)
+        self.cfg_agent.cfg_agent_debug.add_floating_ip_txn(floating_ip,
+                                                  "FIP_ADD",
+                                                  self.context.request_id,
+                                                  comment="Fix-IP:%s" % (
+                                                      fixed_ip))
 
     def _floating_ip_removed(self, ri, ex_gw_port, floating_ip, fixed_ip):
         driver = self.driver_manager.get_driver(ri.id)
         driver.floating_ip_removed(ri, ex_gw_port, floating_ip, fixed_ip)
+        self.cfg_agent.cfg_agent_debug.add_floating_ip_txn(floating_ip,
+                                                  "FIP_RM",
+                                                  self.context.request_id,
+                                                  comment="Fix-IP:%s" % (
+                                                      fixed_ip))
 
     def _enable_router_interface(self, ri, port):
         driver = self.driver_manager.get_driver(ri.id)

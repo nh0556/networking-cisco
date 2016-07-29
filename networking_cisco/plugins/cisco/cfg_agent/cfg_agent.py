@@ -157,6 +157,8 @@ class CiscoCfgAgent(manager.Manager):
             self.conf.cfg_agent.enable_heartbeat)
         self.context = n_context.get_admin_context_without_session()
         self.cfg_agent_debug = cfg_agent_debug.CfgAgentDebug()
+        # share the same debug module with device_status
+        self._dev_status.cfg_agent_debug = self.cfg_agent_debug
 
         self._initialize_rpc(host)
         self._initialize_service_helpers(host)

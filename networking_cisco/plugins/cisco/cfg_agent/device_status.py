@@ -80,6 +80,7 @@ class DeviceStatus(object):
     def __init__(self):
         self.backlog_hosting_devices = {}
         self.enable_heartbeat = False
+        self.cfg_agent_debug = None
 
     def get_backlogged_hosting_devices(self):
         return self.backlog_hosting_devices.keys()
@@ -87,6 +88,14 @@ class DeviceStatus(object):
     def get_backlogged_hosting_devices_info(self):
         resp = self.get_monitored_hosting_devices_info(hd_state_filter='Dead')
         return resp
+
+    def log_hosting_device_txn(self, hd, curr_state, prev_state):
+        if self.cfg_agent_debug:
+            self.cfg_agent_debug.add_hosting_device_txn(
+                                             hd['management_ip_address'],
+                                             curr_state,
+                                             None,
+                                             "previous state: %s" % prev_state)
 
     def get_dead_hosting_devices_info(self):
         """
@@ -258,6 +267,9 @@ class DeviceStatus(object):
                     hd['hd_state'] = cc.HD_ACTIVE
                     # hosting device state
                     response_dict['reachable'].append(hd_id)
+                    self.log_hosting_device_txn(hd,
+                                                cc.HD_ACTIVE,
+                                                cc.HD_NOT_RESPONDING)
                 elif hd_state == cc.HD_DEAD:
                     # test if netconf is actually ready
                     driver = driver_mgr.get_driver_for_hosting_device(hd_id)
@@ -267,6 +279,9 @@ class DeviceStatus(object):
                               (pprint.pformat(hd)))
                         hd['hd_state'] = cc.HD_ACTIVE
                         response_dict['revived'].append(hd_id)
+                        self.log_hosting_device_txn(hd,
+                                                cc.HD_ACTIVE,
+                                                cc.HD_DEAD)
                     except cfg_exceptions.DriverException as e:
                         LOG.debug("netconf not ready on device yet. "
                                   "Error is %s", e)
@@ -289,6 +304,9 @@ class DeviceStatus(object):
                               (pprint.pformat(hd)))
                     hd['backlog_insertion_ts'] = timeutils.utcnow()
                     hd['hd_state'] = cc.HD_NOT_RESPONDING
+                    self.log_hosting_device_txn(hd,
+                                                cc.HD_NOT_RESPONDING,
+                                                cc.HD_ACTIVE)
 
                 elif hd_state == cc.HD_NOT_RESPONDING:
                     if timeutils.is_older_than(
@@ -305,5 +323,8 @@ class DeviceStatus(object):
                                    'time': cfg.CONF.cfg_agent.
                                    hosting_device_dead_timeout})
                         response_dict['dead'].append(hd_id)
+                        self.log_hosting_device_txn(hd,
+                                                cc.HD_DEAD,
+                                                cc.HD_NOT_RESPONDING)
         LOG.debug("Response: %s", response_dict)
         return response_dict
