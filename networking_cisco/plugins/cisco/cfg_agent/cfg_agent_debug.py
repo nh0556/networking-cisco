@@ -13,12 +13,14 @@
 #    under the License.
 
 from collections import OrderedDict
-from oslo_config import cfg
-
 import datetime
 import logging
 import pprint
 import prettytable
+
+from networking_cisco._i18n import _
+
+from oslo_config import cfg
 
 LOG = logging.getLogger(__name__)
 
@@ -111,6 +113,35 @@ class CfgAgentDebug(object):
     def add_request(self, request_id):
         self.requests[request_id] = {'time': datetime.datetime.strftime(
                        datetime.datetime.now(), format='%Y-%m-%d %H:%M:%S.%f')}
+
+    def add_hosting_device_txn(self, hosting_device_ip, txn_type,
+                               request_id=None, comment=None):
+
+        if not cfg.CONF.cfg_agent.enable_cfg_agent_debug:
+            return
+
+        if hosting_device_ip not in self.hosting_devices:
+
+            popped_hosting_device_ip, popped_hosting_device_txns = (
+                CfgAgentDebug._enforce_parent_record_constraints(
+                                                      self.hosting_devices))
+
+            if (popped_hosting_device_ip is not None and
+                popped_hosting_device_txns is not None):
+                LOG.debug("Popped key %s, val = %s" % (
+                          popped_hosting_device_ip,
+                          pprint.pformat(popped_hosting_device_txns)))
+            self.hosting_devices[hosting_device_ip] = []
+
+        txn_record = {'time': datetime.datetime.strftime(
+                       datetime.datetime.now(), format='%Y-%m-%d %H:%M:%S.%f'),
+                      'request_id': request_id,
+                      'txn_type': txn_type,
+                      'comment': comment}
+
+        CfgAgentDebug._add_child_record(self.hosting_devices,
+                                        hosting_device_ip,
+                                        txn_record)
 
     def add_floating_ip_txn(self, floating_ip, txn_type, request_id=None,
                             comment=None):
@@ -218,6 +249,29 @@ class CfgAgentDebug(object):
 
         return fip_txns_buffer
 
+    def get_hosting_device_txns_strfmt(self, hd_ip):
+
+        hd_txns_buffer = None
+
+        if hd_ip in self.hosting_devices:
+            table = prettytable.PrettyTable(["time", "request_id",
+                                             "txn_type", "comment"])
+
+            hd_ip_txns = self.hosting_devices[hd_ip]
+
+            for txn in hd_ip_txns:
+                table.add_row([txn['time'],
+                               txn['request_id'],
+                               txn['txn_type'],
+                               txn['comment']])
+
+            hd_txns_buffer = "hosting_device_ip:%s\n%s" % (
+                                                hd_ip,
+                                                table.get_string())
+
+        return hd_txns_buffer
+
+    def get_agent_txns_strfmt(self, agent_id):
 
         agent_txns_buffer = None
 
@@ -292,6 +346,15 @@ class CfgAgentDebug(object):
                                  self.get_floating_ip_txns_strfmt(floating_ip))
 
         return all_fip_txns
+
+    def get_all_hosting_devices_txns_strfmt(self):
+        all_hosting_device_txns = ''
+
+        for hd_ip in self.hosting_devices:
+            all_hosting_device_txns += "\n%s\n" % (
+                                 self.get_hosting_device_txns_strfmt(hd_ip))
+
+        return all_hosting_device_txns
 
     def _get_total_txn_count(self):
 

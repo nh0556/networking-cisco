@@ -15,9 +15,11 @@ import sys
 
 import datetime
 import mock
+from oslo_config import cfg
 from oslo_utils import uuidutils
 
 sys.modules['ncclient'] = mock.MagicMock()
+from networking_cisco.plugins.cisco.cfg_agent import cfg_agent_debug
 from networking_cisco.plugins.cisco.cfg_agent import device_status
 from neutron.tests import base
 
@@ -290,6 +292,45 @@ class TestBacklogHostingDevice(base.BaseTestCase):
         post_hd_state = (
             self.status.backlog_hosting_devices[hd_id]['hd']['hd_state'])
         self.assertEqual(cc.HD_DEAD, post_hd_state)
+
+    def test_check_backlog_above_BT_not_pingable_aboveDeadTime_dbg_txn(self):
+        """Test for backlog processing after dead time interval.
+
+        This test simulates a hosting device which has passed the
+        created time but greater than the 'declared dead' time.
+        Hosting device is still not pingable.
+        """
+        hd = self.hosting_device
+        hd['created_at'] = create_timestamp(BOOT_TIME + DEAD_TIME + 10)
+        #Inserted in backlog 5 seconds after booting time
+        hd['backlog_insertion_ts'] = create_timestamp(BOOT_TIME + 5,
+                                                      type=TYPE_DATETIME)
+
+        hd_id = hd['id']
+        device_status._is_pingable.return_value = False
+        self.status.cfg_agent_debug = cfg_agent_debug.CfgAgentDebug()
+        cfg.CONF.set_override('enable_cfg_agent_debug', True, 'cfg_agent')
+
+        hd['hd_state'] = cc.HD_NOT_RESPONDING
+        self.status.backlog_hosting_devices[hd_id] = {
+            'hd': hd,
+            'routers': [self.router_id]}
+        expected = {'reachable': [],
+                    'revived': [],
+                    'dead': [hd_id]}
+        self.assertEqual(expected,
+                    self.status.check_backlogged_hosting_devices(self.drv_mgr))
+        self.assertEqual(0, self.drv_mock.send_empty_cfg.call_count)
+        post_hd_state = (
+            self.status.backlog_hosting_devices[hd_id]['hd']['hd_state'])
+        self.assertEqual(cc.HD_DEAD, post_hd_state)
+
+        self.assertTrue(hd['management_ip_address'] in
+                        self.status.cfg_agent_debug.hosting_devices)
+        self.assertEqual(1, len(self.status.cfg_agent_debug.hosting_devices[
+                                                 hd['management_ip_address']]))
+
+        print(self.status.cfg_agent_debug.get_all_hosting_devices_txns_strfmt())
 
     def test_check_backlog_above_BT_revived_hosting_device(self):
         """
