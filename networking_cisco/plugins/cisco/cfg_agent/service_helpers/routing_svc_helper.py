@@ -240,17 +240,31 @@ class RoutingServiceHelper(object):
                           "routers:%s" % (pp.pformat(router_ids)))
 
     def cfg_agent_debug(self, context):
+        cfg_agent_debug_buffer = ''
+
+        cfg_agent_debug_buffer += 'updated routers: %s\n' % (
+            pp.pformat(self.updated_routers))
+        cfg_agent_debug_buffer += 'removed routers: %s\n' % (
+            pp.pformat(self.removed_routers))
+
+        cfg_debug = self.cfg_agent.cfg_agent_debug
+
+        cfg_agent_debug_buffer += 'cfg_agent debug: %s\n' % (
+            cfg_debug.get_all_agent_txns_strfmt())
+
+        cfg_agent_debug_buffer += 'hosting devices: %s\n' % (
+            cfg_debug.get_all_hosting_devices_txns_strfmt())
+
+        cfg_agent_debug_buffer += 'routers: %s\n' % (
+            cfg_debug.get_all_router_txns_strfmt())
+
+        cfg_agent_debug_buffer += 'fips: %s\n' % (
+            cfg_debug.get_all_fip_txns_strfmt())
+
         LOG.debug('cfg_agent_debug invoked!')
-        LOG.debug("**** Updated routers:%s",
-                  pp.pformat(self.updated_routers))
-        LOG.debug("**** Removed routers:%s",
-                  pp.pformat(self.removed_routers))
-        LOG.debug("**** cfg_agent_debug:%s" % (
-                  self.cfg_agent.cfg_agent_debug.get_all_agent_txns_strfmt()))
-        LOG.debug("**** cfg_agent_debug routers:%s" % (
-                  self.cfg_agent.cfg_agent_debug.get_all_router_txns_strfmt()))
-        LOG.debug("**** cfg_agent_debug fips:%s" % (
-                  self.cfg_agent.cfg_agent_debug.get_all_fip_txns_strfmt()))
+        LOG.debug("%s" % cfg_agent_debug_buffer)
+
+        return cfg_agent_debug_buffer
 
     # Routing service helper public methods
 
