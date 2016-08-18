@@ -4,9 +4,11 @@ import pprint
 
 host = 'mitaka'
 amqp_control_exchange = 'neutron'
+
+transport_url = 'rabbit://guest:guest@10.1.25.168:5672/'
 #transport_url = 'rabbit://guest:guest@10.1.185.72:5672/'
 #transport_url = 'rabbit://guest:guest@172.29.74.138:5672/'
-transport_url = 'rabbit://stackrabbit:simple@172.29.74.138:5672/'
+#transport_url = 'rabbit://stackrabbit:simple@172.29.74.138:5672/'
 # This call to get_transport will bootstrap cfg.CONF
 transport = oslo_messaging.get_transport(cfg.CONF)
 
@@ -23,7 +25,6 @@ print ("*** oslo_cfg configuration")
 res = [{k: v} for k, v in cfg.CONF.iteritems()]
 pprint.pprint(res)
 
-
 transport = oslo_messaging.get_transport(cfg.CONF, transport_url)
 
 target_topic = "%s.%s" % ('cisco_cfg_agent_l3_routing', host)
@@ -38,4 +39,3 @@ print ("*** rpc_client cast invoked")
 
 resp = client.call(context, 'cfg_agent_debug')
 print("*** rpc call response = %s" % resp)
-
